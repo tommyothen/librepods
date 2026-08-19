@@ -384,8 +384,12 @@ impl AirPodsDevice {
                         debug!("Sent unhandled AACP event to UI");
                     }
                 }
+                // Keep the IPC state file in sync with every device event.
+                crate::ipc::publish_state(&aacp_manager_clone_events).await;
             }
         });
+
+        crate::ipc::publish_state(&aacp_manager).await;
 
         AirPodsDevice {
             mac_address,

@@ -1,5 +1,6 @@
 mod bluetooth;
 mod devices;
+mod ipc;
 mod media_controller;
 mod ui;
 mod utils;
@@ -12,7 +13,7 @@ use crate::ui::messages::BluetoothUIMessage;
 use crate::ui::tray::MyTray;
 use crate::utils::{get_app_settings_path, get_devices_path};
 use bluer::{Address, InternalErrorKind};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dbus::arg::{RefArg, Variant};
 use dbus::blocking::Connection;
 use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
@@ -44,11 +45,62 @@ struct Args {
     )]
     le_debug: bool,
     #[arg(long, short = 'v', help = "Show application version and exit")]
-    version: bool
+    version: bool,
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+#[derive(Subcommand)]
+enum CliCommand {
+    /// Control a running librepods instance over its local socket
+    Ctl {
+        #[command(subcommand)]
+        action: CtlAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CtlAction {
+    /// Print the connected device state as JSON
+    State,
+    /// Set noise control mode: off, anc, transparency or adaptive
+    Anc { mode: String },
+    /// Enable or disable conversation awareness: on or off
+    Ca { setting: String },
+}
+
+/// Thin client for the control socket; prints the daemon's JSON reply and
+/// exits non-zero on failure so scripts can rely on the exit code.
+fn run_ctl(action: CtlAction) -> iced::Result {
+    let command = match action {
+        CtlAction::State => serde_json::json!({"cmd": "get-state"}),
+        CtlAction::Anc { mode } => serde_json::json!({"cmd": "set-noise-control", "mode": mode}),
+        CtlAction::Ca { setting } => {
+            let enabled = matches!(setting.as_str(), "on" | "true" | "1");
+            serde_json::json!({"cmd": "set-conversation-awareness", "enabled": enabled})
+        }
+    };
+    match ipc::ctl_request(command) {
+        Ok(response) => {
+            println!("{}", response);
+            if response.contains(r#""ok":false"#) {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 fn main() -> iced::Result {
     let args = Args::parse();
+
+    if let Some(CliCommand::Ctl { action }) = args.command {
+        return run_ctl(action);
+    }
 
     if args.version {
         println!(
@@ -148,6 +200,11 @@ async fn async_main(
         let handle = tray.spawn().await.unwrap();
         Some(handle)
     };
+
+    // Fresh runs start from a clean disconnected state; the control server
+    // lets external tools (bars, plugins) query and drive connected devices.
+    ipc::publish_disconnected();
+    tokio::spawn(ipc::start_control_server(device_managers.clone()));
 
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
@@ -274,6 +331,9 @@ async fn async_main(
             return true;
         };
         if is_connected==0 {
+            if uuids.iter().any(|u| u.to_lowercase() == target_uuid) {
+                ipc::publish_disconnected();
+            }
             if let Err(e) = ui_tx.send(BluetoothUIMessage::DeviceDisconnected(addr_str.clone())) {
                 warn!("Failed to send DeviceConnected UI message: {:?}", e);
             }
