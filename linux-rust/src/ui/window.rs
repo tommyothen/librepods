@@ -19,7 +19,8 @@ use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
     text_input, toggler
 };
-use iced::{Background, Border, Center, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
+use crate::ui::airpods::{muted, separator};
+use iced::{Background, Border, Center, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
 use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -390,6 +391,7 @@ impl App {
                                         status.identifier == ControlCommandIdentifiers::AllowOffOption &&
                                         matches!(status.value.as_slice(), [0x01])
                                     }),
+                                    ear_detection: state.ear_detection_status.clone(),
                                 }));
                             }
                             Some(DeviceType::Nothing) => {
@@ -523,6 +525,13 @@ impl App {
                                 {
                                     state.battery = battery_info;
                                     debug!("Updated battery info for {}: {:?}", mac, state.battery);
+                                }
+                            }
+                            AACPEvent::EarDetection(_, new_status) => {
+                                if let Some(DeviceState::AirPods(state)) =
+                                    self.device_states.get_mut(&mac)
+                                {
+                                    state.ear_detection = new_status;
                                 }
                             }
                             _ => {}
@@ -684,112 +693,102 @@ impl App {
         let pane_grid = pane_grid::PaneGrid::new(&self.panes, |_pane_id, pane, _is_maximized| {
             match pane {
                 Pane::Sidebar => {
-                    let create_tab_button = |tab: Tab, label: &str, mac_addr: &str, connected: bool| -> Element<'_, Message> {
-                        let label = label.to_string() + if connected { " 􀉣" } else { "" };
-                        let is_selected = self.selected_tab == tab;
-                        let col = column![
-                            text(label).size(16),
-                            text({
-                                if connected {
-                                    let mac = match tab {
-                                        Tab::Device(ref mac) => mac.as_str(),
-                                        _ => "",
-                                    };
-
-                                    match self.device_states.get(mac) {
-                                        Some(DeviceState::AirPods(state)) => {
-                                            let b = &state.battery;
-                                            let headphone = b.iter().find(|x| x.component == BatteryComponent::Headphone)
-                                                .map(|x| x.level);
-                                            // if headphones is not None, use only that
-                                            if let Some(level) = headphone {
-                                                let charging = b.iter().find(|x| x.component == BatteryComponent::Headphone)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                format!(
-                                                    "􀺹 {}%{}",
-                                                    level, if charging {"\u{1002E6}"} else {""}
-                                                )
-                                            } else {
-                                                let left  = b.iter().find(|x| x.component == BatteryComponent::Left)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let right = b.iter().find(|x| x.component == BatteryComponent::Right)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let case  = b.iter().find(|x| x.component == BatteryComponent::Case)
-                                                    .map(|x| x.level).unwrap_or_default();
-                                                let left_charging = b.iter().find(|x| x.component == BatteryComponent::Left)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                let right_charging = b.iter().find(|x| x.component == BatteryComponent::Right)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                let case_charging = b.iter().find(|x| x.component == BatteryComponent::Case)
-                                                    .map(|x| x.status == BatteryStatus::Charging).unwrap_or(false);
-                                                format!(
-                                                    "\u{1018E5} {}%{} \u{1018E8} {}%{} \u{100E6C} {}%{}",
-                                                    left, if left_charging {"\u{1002E6}"} else {""}, right, if right_charging {"\u{1002E6}"} else {""}, case, if case_charging {"\u{1002E6}"} else {""}
-                                                )
-                                            }
-                                        }
-                                        _ => "Connected".to_string(),
-                                    }
-                                } else {
-                                    mac_addr.to_string()
-                                }
-                            }).size(12)
-                        ];
-                        let content = container(col)
-                            .padding(8);
-                        let style = move |theme: &Theme, _status| {
-                            if is_selected {
-                                let mut style = Style::default()
-                                    .with_background(theme.palette().primary);
-                                let mut border = Border::default();
-                                border.color = theme.palette().text;
-                                style.border = border.rounded(12);
-                                style
+                    // Flat item: accent edge + subtle inset when selected, muted otherwise.
+                    let sidebar_item_style = |is_selected: bool| {
+                        move |theme: &Theme, _status: button::Status| {
+                            let mut style = Style::default();
+                            style.background = Some(Background::Color(if is_selected {
+                                theme.palette().text.scale_alpha(0.04)
                             } else {
-                                let mut style = Style::default()
-                                    .with_background(theme.palette().primary.scale_alpha(0.1));
-                                let mut border = Border::default();
-                                border.color = theme.palette().primary.scale_alpha(0.1);
-                                style.border = border.rounded(8);
-                                style.text_color = theme.palette().text;
-                                style
+                                Color::TRANSPARENT
+                            }));
+                            style.text_color = if is_selected {
+                                theme.palette().text
+                            } else {
+                                muted(theme)
+                            };
+                            style
+                        }
+                    };
+
+                    let create_tab_button = |tab: Tab, label: &str, mac_addr: &str, connected: bool| -> Element<'_, Message> {
+                        let is_selected = self.selected_tab == tab;
+                        let sub = if connected {
+                            let mac = match tab {
+                                Tab::Device(ref mac) => mac.as_str(),
+                                _ => "",
+                            };
+                            match self.device_states.get(mac) {
+                                Some(DeviceState::AirPods(state)) => {
+                                    let level = |component: BatteryComponent| {
+                                        state.battery.iter()
+                                            .find(|x| x.component == component && x.status != BatteryStatus::Disconnected)
+                                            .map(|x| x.level)
+                                    };
+                                    if let Some(headphone) = level(BatteryComponent::Headphone) {
+                                        format!("{}%", headphone)
+                                    } else {
+                                        let fmt = |v: Option<u8>| v.map(|l| l.to_string())
+                                            .unwrap_or_else(|| "\u{2013}".to_string());
+                                        format!(
+                                            "L {} \u{00b7} R {} \u{00b7} C {}",
+                                            fmt(level(BatteryComponent::Left)),
+                                            fmt(level(BatteryComponent::Right)),
+                                            fmt(level(BatteryComponent::Case)),
+                                        )
+                                    }
+                                }
+                                _ => "Connected".to_string(),
                             }
+                        } else {
+                            mac_addr.to_string()
                         };
-                        button(content)
-                            .style(style)
-                            .padding(5)
+
+                        let accent = container(Space::new().width(2).height(Length::Fill)).style(
+                            move |theme: &Theme| container::Style {
+                                background: Some(Background::Color(if is_selected {
+                                    theme.palette().primary
+                                } else {
+                                    Color::TRANSPARENT
+                                })),
+                                ..container::Style::default()
+                            },
+                        );
+
+                        let content = column![
+                            text(label.to_string()).size(14),
+                            text(sub).size(11).style(|theme: &Theme| text::Style {
+                                color: Some(muted(theme)),
+                            }),
+                        ]
+                        .spacing(2);
+
+                        button(row![
+                            accent,
+                            container(content).padding(Padding {
+                                top: 6.0,
+                                bottom: 6.0,
+                                left: 10.0,
+                                right: 10.0,
+                            })
+                        ])
+                            .style(sidebar_item_style(is_selected))
+                            .padding(0)
                             .on_press(Message::SelectTab(tab))
                             .width(Length::Fill)
                             .into()
                     };
 
                     let create_settings_button = || -> Element<'_, Message> {
-                        let label = "Settings".to_string();
                         let is_selected = self.selected_tab == Tab::Settings;
-                        let col = column![text(label).size(16)];
-                        let content = container(col)
-                            .padding(8);
-                        let style = move |theme: &Theme, _status| {
-                            if is_selected {
-                                let mut style = Style::default()
-                                    .with_background(theme.palette().primary);
-                                let mut border = Border::default();
-                                border.color = theme.palette().text;
-                                style.border = border.rounded(12);
-                                style
-                            } else {
-                                let mut style = Style::default()
-                                    .with_background(theme.palette().primary.scale_alpha(0.1));
-                                let mut border = Border::default();
-                                border.color = theme.palette().primary.scale_alpha(0.1);
-                                style.border = border.rounded(8);
-                                style.text_color = theme.palette().text;
-                                style
-                            }
-                        };
-                        button(content)
-                            .style(style)
-                            .padding(5)
+                        button(text("Settings").size(14))
+                            .style(sidebar_item_style(is_selected))
+                            .padding(Padding {
+                                top: 8.0,
+                                bottom: 8.0,
+                                left: 12.0,
+                                right: 12.0,
+                            })
                             .on_press(Message::SelectTab(Tab::Settings))
                             .width(Length::Fill)
                             .into()
@@ -813,7 +812,9 @@ impl App {
 
                     let content = column![
                         row![
-                            text("Devices").size(18),
+                            text("DEVICES").size(11).style(|theme: &Theme| text::Style {
+                                color: Some(muted(theme)),
+                            }),
                             // Removing until I actually add support for devices other than AirPods
                             // Space::new().width(Length::Fill),
                             // button(
@@ -851,10 +852,10 @@ impl App {
                             rule::vertical(1).style(
                                 |theme: &Theme| {
                                     rule::Style{
-                                        color: theme.palette().primary.scale_alpha(0.2),
-                                        radius: Radius::from(8.0),
+                                        color: theme.palette().text.scale_alpha(0.10),
+                                        radius: Radius::from(0.0),
                                         fill_mode: FillMode::Full,
-                                        snap: false
+                                        snap: true
                                     }
                                 }
                             )
@@ -939,205 +940,100 @@ impl App {
                             }
                         }
                         Tab::Settings => {
-                            let tray_text_mode_toggle = container(
+                            let section = |label: &'static str| {
+                                text(label).size(11).style(|theme: &Theme| text::Style {
+                                    color: Some(muted(theme)),
+                                })
+                            };
+                            let toggle_line = |label: &'static str, value: bool, msg: fn(bool) -> Message| -> Element<'_, Message> {
                                 row![
-                                    column![
-                                        text("Use text in tray").size(16),
-                                        text("Use text for battery status in tray instead of a progress bar.").size(12).style(
-                                            |theme: &Theme| {
-                                                let mut style = text::Style::default();
-                                                style.color = Some(theme.palette().text.scale_alpha(0.7));
-                                                style
-                                            }
-                                        ).width(Length::Fill)
-                                    ].width(Length::Fill),
-                                    toggler(self.tray_text_mode)
-                                        .on_toggle(move |is_enabled| {
-                                            Message::TrayTextModeChanged(is_enabled)
-                                        })
-                                    .spacing(0)
-                                    .size(20)
-                                    ]
-                                        .align_y(Center)
-                                        .spacing(12)
-                                    )
-                                        .padding(Padding{
-                                            top: 5.0,
-                                            bottom: 5.0,
-                                            left: 18.0,
-                                            right: 18.0,
-                                        })
-                                        .style(
-                                            |theme: &Theme| {
-                                                let mut style = container::Style::default();
-                                                style.background = Some(Background::Color(theme.palette().primary.scale_alpha(0.1)));
-                                                let mut border = Border::default();
-                                                border.color = theme.palette().primary.scale_alpha(0.5);
-                                                style.border = border.rounded(16);
-                                                style
-                                            }
-                                        )
-                                    .align_y(Center);
-
-                            let appearance_settings_col = column![
-                                container(
-                                    text("Appearance").size(20).style(
-                                        |theme: &Theme| {
-                                            let mut style = text::Style::default();
-                                            style.color = Some(theme.palette().primary);
-                                            style
-                                        }
-                                    )
-                                )
-                                .padding(Padding{
-                                    top: 0.0,
-                                    bottom: 0.0,
-                                    left: 18.0,
-                                    right: 18.0,
-                                }),
-                                container(
-                                    row![
-                                        text("Theme")
-                                            .size(16),
-                                        Space::new().width(Length::Fill),
-                                        combo_box(
-                                            &self.theme_state,
-                                            "Select theme",
-                                            Some(&self.selected_theme),
-                                            Message::ThemeSelected
-                                        )
-                                        .input_style(
-                                            |theme: &Theme, _status| {
-                                                text_input::Style {
-                                                    background: Background::Color(theme.palette().primary.scale_alpha(0.2)),
-                                                    border: Border {
-                                                        width: 1.0,
-                                                        color: theme.palette().text.scale_alpha(0.3),
-                                                        radius: Radius::from(4.0)
-                                                    },
-                                                    icon: Default::default(),
-                                                    placeholder: theme.palette().text,
-                                                    value: theme.palette().text,
-                                                    selection: Default::default(),
-                                                }
-                                            }
-                                        )
-                                        .menu_style(
-                                            |theme: &Theme| {
-                                                menu::Style {
-                                                    background: Background::Color(theme.palette().background),
-                                                    border: Border {
-                                                        width: 1.0,
-                                                        color: theme.palette().text,
-                                                        radius: Radius::from(4.0)
-                                                    },
-                                                    text_color: theme.palette().text,
-                                                    selected_text_color: theme.palette().text,
-                                                    selected_background: Background::Color(theme.palette().primary.scale_alpha(0.3)),
-                                                    shadow: Default::default()
-                                                }
-                                            }
-                                        )
-                                        .padding(Padding{
-                                            top: 5.0,
-                                            bottom: 5.0,
-                                            left: 10.0,
-                                            right: 10.0,
-                                        })
-                                        .width(Length::from(200))
-                                    ]
-                                    .align_y(Center)
-                                )
-                                    .padding(Padding{
-                                        top: 5.0,
-                                        bottom: 5.0,
-                                        left: 18.0,
-                                        right: 18.0,
-                                    })
-                                    .style(
-                                        |theme: &Theme| {
-                                            let mut style = container::Style::default();
-                                            style.background = Some(Background::Color(theme.palette().primary.scale_alpha(0.1)));
-                                            let mut border = Border::default();
-                                            border.color = theme.palette().primary.scale_alpha(0.5);
-                                            style.border = border.rounded(16);
-                                            style
-                                        }
-                                    )
+                                    text(label).size(14).width(Length::Fill),
+                                    toggler(value).on_toggle(msg).spacing(0).size(20),
                                 ]
-                                .spacing(12);
+                                .align_y(Center)
+                                .padding(Padding {
+                                    top: 8.0,
+                                    bottom: 8.0,
+                                    left: 0.0,
+                                    right: 0.0,
+                                })
+                                .into()
+                            };
 
-                            let stem_control_value = self.stem_control;
-                            let stem_control_toggle = container(
-                                row![
-                                    column![
-                                        text("Stem press track control").size(16),
-                                        text("Double press = next track, triple press = previous track. Disable if your environment handles AirPods AVRCP commands natively.").size(12).style(
-                                            |theme: &Theme| {
-                                                let mut style = text::Style::default();
-                                                style.color = Some(theme.palette().text.scale_alpha(0.7));
-                                                style
-                                            }
-                                        ).width(Length::Fill)
-                                    ].width(Length::Fill),
-                                    toggler(stem_control_value)
-                                        .on_toggle(move |is_enabled| {
-                                            Message::StemControlChanged(is_enabled)
-                                        })
-                                    .spacing(0)
-                                    .size(20)
-                                    ]
-                                        .align_y(Center)
-                                        .spacing(12)
-                                    )
-                                        .padding(Padding{
-                                            top: 5.0,
-                                            bottom: 5.0,
-                                            left: 18.0,
-                                            right: 18.0,
-                                        })
-                                        .style(
-                                            |theme: &Theme| {
-                                                let mut style = container::Style::default();
-                                                style.background = Some(Background::Color(theme.palette().primary.scale_alpha(0.1)));
-                                                let mut border = Border::default();
-                                                border.color = theme.palette().primary.scale_alpha(0.5);
-                                                style.border = border.rounded(16);
-                                                style
-                                            }
-                                        )
-                                    .align_y(Center);
-
-                            let controls_settings_col = column![
-                                container(
-                                    text("Controls").size(20).style(
-                                        |theme: &Theme| {
-                                            let mut style = text::Style::default();
-                                            style.color = Some(theme.palette().primary);
-                                            style
-                                        }
-                                    )
+                            let theme_row = row![
+                                text("Theme").size(14).width(Length::Fill),
+                                combo_box(
+                                    &self.theme_state,
+                                    "Select theme",
+                                    Some(&self.selected_theme),
+                                    Message::ThemeSelected
                                 )
-                                .padding(Padding{
-                                    top: 0.0,
-                                    bottom: 0.0,
-                                    left: 18.0,
-                                    right: 18.0,
-                                }),
-                                stem_control_toggle
+                                .input_style(|theme: &Theme, _status| text_input::Style {
+                                    background: Background::Color(Color::TRANSPARENT),
+                                    border: Border {
+                                        width: 1.0,
+                                        color: theme.palette().text.scale_alpha(0.10),
+                                        radius: Radius::from(0.0),
+                                    },
+                                    icon: Default::default(),
+                                    placeholder: muted(theme),
+                                    value: theme.palette().text,
+                                    selection: theme.palette().primary.scale_alpha(0.4),
+                                })
+                                .menu_style(|theme: &Theme| menu::Style {
+                                    background: Background::Color(theme.palette().background),
+                                    border: Border {
+                                        width: 1.0,
+                                        color: theme.palette().text.scale_alpha(0.10),
+                                        radius: Radius::from(0.0),
+                                    },
+                                    text_color: theme.palette().text,
+                                    selected_text_color: theme.palette().text,
+                                    selected_background: Background::Color(
+                                        theme.palette().primary.scale_alpha(0.3),
+                                    ),
+                                    shadow: Default::default()
+                                })
+                                .padding(Padding {
+                                    top: 5.0,
+                                    bottom: 5.0,
+                                    left: 10.0,
+                                    right: 10.0,
+                                })
+                                .width(Length::from(200))
                             ]
-                            .spacing(12);
+                            .align_y(Center)
+                            .padding(Padding {
+                                top: 8.0,
+                                bottom: 8.0,
+                                left: 0.0,
+                                right: 0.0,
+                            });
 
                             container(
                                 column![
-                                    appearance_settings_col,
-                                    Space::new().height(Length::from(20)),
-                                    tray_text_mode_toggle,
-                                    Space::new().height(Length::from(20)),
-                                    controls_settings_col,
+                                    section("APPEARANCE"),
+                                    theme_row,
+                                    Space::new().height(10),
+                                    separator(),
+                                    Space::new().height(18),
+                                    section("TRAY"),
+                                    toggle_line("Text battery in tray", self.tray_text_mode, Message::TrayTextModeChanged),
+                                    Space::new().height(10),
+                                    separator(),
+                                    Space::new().height(18),
+                                    section("CONTROLS"),
+                                    toggle_line("Stem press track control", self.stem_control, Message::StemControlChanged),
                                 ]
+                                .max_width(560)
                             )
-                                .padding(20)
+                                .padding(Padding {
+                                    top: 28.0,
+                                    bottom: 20.0,
+                                    left: 28.0,
+                                    right: 28.0,
+                                })
+                                .center_x(Length::Fill)
                                 .width(Length::Fill)
                                 .height(Length::Fill)
                         },

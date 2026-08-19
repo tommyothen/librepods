@@ -248,6 +248,11 @@ impl AirPodsDevice {
                         controller
                             .handle_ear_detection(old_status, new_status)
                             .await;
+                        // The window shows in-ear status, so forward this too.
+                        let _ = ui_tx_clone.send(BluetoothUIMessage::AACPUIEvent(
+                            mac_address.to_string(),
+                            event_clone,
+                        ));
                     }
                     AACPEvent::BatteryInfo(battery_info) => {
                         debug!("Received BatteryInfo event: {:?}", battery_info);
