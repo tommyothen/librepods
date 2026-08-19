@@ -2,6 +2,7 @@ use aes::Aes128;
 use aes::cipher::Array;
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use iced::Theme;
+use iced::theme::Palette;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -51,6 +52,53 @@ pub fn get_app_settings_path() -> PathBuf {
     new_path
 }
 
+pub fn get_custom_theme_path() -> PathBuf {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_default()));
+    PathBuf::from(config_dir).join("librepods").join("theme.json")
+}
+
+/// On-disk shape of the Custom theme. All colors are optional hex strings
+/// ("#rrggbb"); anything missing or unparsable falls back to the Dark palette,
+/// so partial or hand-edited files stay usable.
+#[derive(Debug, Clone, Deserialize)]
+struct CustomThemeFile {
+    name: Option<String>,
+    background: Option<String>,
+    text: Option<String>,
+    primary: Option<String>,
+    success: Option<String>,
+    warning: Option<String>,
+    danger: Option<String>,
+}
+
+/// Load the Custom theme from `theme.json`. External tools (theme generators,
+/// dotfile managers) can rewrite the file at any time; the UI watches it and
+/// reloads live while the Custom theme is selected.
+pub fn load_custom_theme() -> Theme {
+    let parsed: Option<CustomThemeFile> = std::fs::read_to_string(get_custom_theme_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let Some(file) = parsed else {
+        return Theme::Dark;
+    };
+    let color = |hex: &Option<String>, fallback| {
+        hex.as_deref()
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(fallback)
+    };
+    let dark = Palette::DARK;
+    let palette = Palette {
+        background: color(&file.background, dark.background),
+        text: color(&file.text, dark.text),
+        primary: color(&file.primary, dark.primary),
+        success: color(&file.success, dark.success),
+        warning: color(&file.warning, dark.warning),
+        danger: color(&file.danger, dark.danger),
+    };
+    Theme::custom(file.name.unwrap_or_else(|| "Custom".to_string()), palette)
+}
+
 fn e(key: &[u8; 16], data: &[u8; 16]) -> [u8; 16] {
     let mut swapped_key = *key;
     swapped_key.reverse();
@@ -97,6 +145,7 @@ pub enum MyTheme {
     Nightfly,
     Oxocarbon,
     Ferra,
+    Custom,
 }
 
 impl std::fmt::Display for MyTheme {
@@ -124,6 +173,7 @@ impl std::fmt::Display for MyTheme {
             Self::Nightfly => "Nightfly",
             Self::Oxocarbon => "Oxocarbon",
             Self::Ferra => "Ferra",
+            Self::Custom => "Custom",
         })
     }
 }
@@ -153,6 +203,7 @@ impl From<MyTheme> for Theme {
             MyTheme::Nightfly => Theme::Nightfly,
             MyTheme::Oxocarbon => Theme::Oxocarbon,
             MyTheme::Ferra => Theme::Ferra,
+            MyTheme::Custom => load_custom_theme(),
         }
     }
 }

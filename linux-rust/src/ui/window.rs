@@ -9,7 +9,7 @@ use crate::devices::enums::{
 use crate::ui::airpods::airpods_view;
 use crate::ui::messages::BluetoothUIMessage;
 use crate::ui::nothing::nothing_view;
-use crate::utils::{MyTheme, get_app_settings_path, get_devices_path};
+use crate::utils::{MyTheme, get_app_settings_path, get_custom_theme_path, get_devices_path, load_custom_theme};
 use bluer::{Address};
 use iced::border::Radius;
 use iced::overlay::menu;
@@ -66,6 +66,8 @@ pub struct App {
     selected_tab: Tab,
     theme_state: combo_box::State<MyTheme>,
     selected_theme: MyTheme,
+    // Cached so the file is only re-read when it changes, not on every frame.
+    custom_theme: Theme,
     ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>>>,
     bluetooth_state: BluetoothState,
     paired_devices: HashMap<String, Address>,
@@ -108,6 +110,7 @@ pub enum Message {
     StateChanged(String, DeviceState),
     TrayTextModeChanged(bool), // yes, I know I should add all settings to a struct, but I'm lazy
     StemControlChanged(bool),
+    ReloadCustomTheme,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -205,8 +208,10 @@ impl App {
                     MyTheme::Nightfly,
                     MyTheme::Oxocarbon,
                     MyTheme::Ferra,
+                    MyTheme::Custom,
                 ]),
                 selected_theme,
+                custom_theme: load_custom_theme(),
                 ui_rx,
                 bluetooth_state,
                 paired_devices: HashMap::new(),
@@ -248,6 +253,9 @@ impl App {
             }
             Message::ThemeSelected(theme) => {
                 self.selected_theme = theme;
+                if theme == MyTheme::Custom {
+                    self.custom_theme = load_custom_theme();
+                }
                 let app_settings_path = get_app_settings_path();
                 let settings = serde_json::json!({
                     "theme": self.selected_theme,
@@ -654,6 +662,10 @@ impl App {
                     settings
                 );
                 std::fs::write(app_settings_path, settings.to_string()).ok();
+                Task::none()
+            }
+            Message::ReloadCustomTheme => {
+                self.custom_theme = load_custom_theme();
                 Task::none()
             }
         }
@@ -1297,12 +1309,45 @@ impl App {
     }
 
     fn theme(&self, _id: window::Id) -> Theme {
-        self.selected_theme.into()
+        if self.selected_theme == MyTheme::Custom {
+            self.custom_theme.clone()
+        } else {
+            self.selected_theme.into()
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        window::close_events().map(Message::WindowClosed)
+        let close_events = window::close_events().map(Message::WindowClosed);
+        if self.selected_theme == MyTheme::Custom {
+            Subscription::batch([close_events, Subscription::run(custom_theme_watcher)])
+        } else {
+            close_events
+        }
     }
+}
+
+// Polls the custom theme file's mtime once a second and emits a reload message
+// when it changes, so external rewrites (e.g. a theme generator) apply without
+// a restart. Only subscribed while the Custom theme is selected.
+fn custom_theme_watcher() -> impl futures::Stream<Item = Message> {
+    futures::stream::unfold(
+        None::<std::time::SystemTime>,
+        |mut last| async move {
+            loop {
+                let mtime = std::fs::metadata(get_custom_theme_path())
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+                if mtime != last {
+                    if mtime.is_some() {
+                        return Some((Message::ReloadCustomTheme, mtime));
+                    }
+                    // File removed; remember that without emitting.
+                    last = mtime;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        },
+    )
 }
 
 async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>>>) -> Message {
