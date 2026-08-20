@@ -66,16 +66,7 @@ impl ksni::Tray for MyTray {
         };
         let any_bud_charging = matches!(self.battery_l_status, Some(BatteryStatus::Charging))
             || matches!(self.battery_r_status, Some(BatteryStatus::Charging));
-        let app_settings_path = get_app_settings_path();
-        let settings = std::fs::read_to_string(&app_settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        let text_mode = settings
-            .clone()
-            .and_then(|v| v.get("tray_text_mode").cloned())
-            .and_then(|ttm| serde_json::from_value(ttm).ok())
-            .unwrap_or(false);
-        let icon = generate_icon(&text, text_mode, any_bud_charging);
+        let icon = generate_icon(&text, read_tray_text_mode(), any_bud_charging);
         vec![icon]
     }
     fn tool_tip(&self) -> ToolTip {
@@ -182,6 +173,30 @@ impl ksni::Tray for MyTray {
                 ..Default::default()
             }
             .into(),
+            CheckmarkItem {
+                label: "Battery as text".into(),
+                checked: read_tray_text_mode(),
+                activate: Box::new(|_this: &mut Self| {
+                    // The icon renderer re-reads the setting on every redraw,
+                    // so flipping the file is all a toggle needs.
+                    let path = get_app_settings_path();
+                    let mut settings = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let current = settings
+                        .get("tray_text_mode")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    settings["tray_text_mode"] = serde_json::Value::Bool(!current);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&path, settings.to_string());
+                }),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Exit".into(),
                 icon_name: "application-exit".into(),
@@ -191,6 +206,14 @@ impl ksni::Tray for MyTray {
             .into(),
         ]
     }
+}
+
+fn read_tray_text_mode() -> bool {
+    std::fs::read_to_string(get_app_settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("tray_text_mode").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
 }
 
 fn generate_icon(text: &str, text_mode: bool, charging: bool) -> Icon {

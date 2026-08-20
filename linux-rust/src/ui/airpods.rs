@@ -37,6 +37,18 @@ pub fn separator<'a>() -> Element<'a, Message> {
         .into()
 }
 
+// Fixed height on purpose: a Fill-height rule would inflate its whole row.
+const BAND_HEIGHT: f32 = 128.0;
+
+fn band_divider<'a>() -> Element<'a, Message> {
+    container(Space::new().width(1).height(BAND_HEIGHT))
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(hairline(theme))),
+            ..container::Style::default()
+        })
+        .into()
+}
+
 // Small uppercase section label, e.g. "NOISE CONTROL".
 fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
     text(label)
@@ -47,14 +59,15 @@ fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
         .into()
 }
 
+// One cell of the battery band: a large figure over a thin fill bar.
 fn battery_cell<'a>(label: &'static str, info: Option<&BatteryInfo>) -> Element<'a, Message> {
     let connected = info.map(|b| b.status != BatteryStatus::Disconnected).unwrap_or(false);
     let charging = info.map(|b| b.status == BatteryStatus::Charging).unwrap_or(false);
 
     let number: Element<'a, Message> = if let (true, Some(b)) = (connected, info) {
         let mut cells = row![
-            text(b.level.to_string()).size(30),
-            text("%").size(14).style(|theme: &Theme| text::Style {
+            text(b.level.to_string()).size(40),
+            text("%").size(16).style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
             }),
         ]
@@ -72,7 +85,7 @@ fn battery_cell<'a>(label: &'static str, info: Option<&BatteryInfo>) -> Element<
         cells.into()
     } else {
         text("\u{2013}")
-            .size(30)
+            .size(40)
             .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
             })
@@ -81,7 +94,7 @@ fn battery_cell<'a>(label: &'static str, info: Option<&BatteryInfo>) -> Element<
 
     let bar: Element<'a, Message> = if let (true, Some(b)) = (connected, info) {
         progress_bar(0.0..=100.0, b.level as f32)
-            .length(72)
+            .length(Length::Fill)
             .girth(3)
             .style(|theme: &Theme| progress_bar::Style {
                 background: Background::Color(hairline(theme)),
@@ -90,7 +103,7 @@ fn battery_cell<'a>(label: &'static str, info: Option<&BatteryInfo>) -> Element<
             })
             .into()
     } else {
-        container(Space::new().width(72).height(3))
+        container(Space::new().width(Length::Fill).height(3))
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(hairline(theme))),
                 ..container::Style::default()
@@ -103,10 +116,18 @@ fn battery_cell<'a>(label: &'static str, info: Option<&BatteryInfo>) -> Element<
         text(label).size(12).style(|theme: &Theme| text::Style {
             color: Some(muted(theme)),
         }),
-        Space::new().height(6),
+        Space::new().height(10),
         bar,
     ]
     .spacing(2)
+    .width(Length::Fill)
+    .height(BAND_HEIGHT)
+    .padding(Padding {
+        top: 18.0,
+        bottom: 18.0,
+        left: 20.0,
+        right: 20.0,
+    })
     .into()
 }
 
@@ -143,8 +164,8 @@ fn mode_segment<'a>(
 
     button(text(label).size(13).width(Length::Fill).center())
         .padding(Padding {
-            top: 9.0,
-            bottom: 9.0,
+            top: 11.0,
+            bottom: 11.0,
             left: 0.0,
             right: 0.0,
         })
@@ -177,8 +198,8 @@ fn toggle_row<'a>(
     ]
     .align_y(Center)
     .padding(Padding {
-        top: 8.0,
-        bottom: 8.0,
+        top: 9.0,
+        bottom: 9.0,
         left: 0.0,
         right: 0.0,
     })
@@ -205,7 +226,7 @@ fn info_row<'a>(label: &'static str, value: String, copy: bool) -> Element<'a, M
     row![
         text(label)
             .size(13)
-            .width(160)
+            .width(130)
             .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
             }),
@@ -245,14 +266,15 @@ pub fn airpods_view<'a>(
     devices_list: &HashMap<String, DeviceData>,
     state: &'a AirPodsState,
     aacp_manager: Arc<AACPManager>,
+    stem_control: bool,
     // att_manager: Arc<ATTManager>
 ) -> iced::widget::Container<'a, Message> {
     let mac = mac.to_string();
 
-    // Hero: the device name doubles as the rename input.
+    // Hero: the device name doubles as the rename input, MAC sits at the far edge.
     let aacp_manager_for_rename = aacp_manager.clone();
     let title = text_input("Name", &state.device_name)
-        .size(22)
+        .size(24)
         .padding(0)
         .style(|theme: &Theme, _status| text_input::Style {
             background: Background::Color(Color::TRANSPARENT),
@@ -283,27 +305,46 @@ pub fn airpods_view<'a>(
         });
 
     let hero = column![
-        title,
+        row![
+            title,
+            text(mac.clone()).size(12).style(|theme: &Theme| text::Style {
+                color: Some(muted(theme)),
+            }),
+        ]
+        .spacing(16)
+        .align_y(Center),
         Space::new().height(4),
         text(status_line(state))
             .size(12)
             .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
             }),
+        Space::new().height(20),
+        separator(),
     ];
 
-    // Battery: a single Headphone component (AirPods Max) or Left/Right/Case.
+    // Battery band: one bordered strip, cells split by vertical hairlines.
+    // A single Headphone component (AirPods Max) or Left/Right/Case.
     let find = |component: BatteryComponent| state.battery.iter().find(|b| b.component == component);
-    let battery_row = if let Some(headphone) = find(BatteryComponent::Headphone) {
+    let battery_cells = if let Some(headphone) = find(BatteryComponent::Headphone) {
         row![battery_cell("Headphones", Some(headphone))]
     } else {
         row![
             battery_cell("Left", find(BatteryComponent::Left)),
+            band_divider(),
             battery_cell("Right", find(BatteryComponent::Right)),
+            band_divider(),
             battery_cell("Case", find(BatteryComponent::Case)),
         ]
-    }
-    .spacing(36);
+    };
+    let battery_band = container(battery_cells).style(|theme: &Theme| container::Style {
+        border: Border {
+            width: 1.0,
+            color: hairline(theme),
+            radius: 0.into(),
+        },
+        ..container::Style::default()
+    });
 
     // Noise control: equal-width segments inside one hairline outline.
     let mut modes = vec![
@@ -327,7 +368,19 @@ pub fn airpods_view<'a>(
         ..container::Style::default()
     });
 
-    // Audio toggles, flat rows.
+    let left_col = column![
+        section_header("BATTERY"),
+        Space::new().height(14),
+        battery_band,
+        Space::new().height(28),
+        section_header("NOISE CONTROL"),
+        Space::new().height(14),
+        noise_control,
+    ]
+    .width(Length::Fill);
+
+    // Audio toggles, flat rows. Stem press lives here too: it configures the
+    // AirPods themselves, so it belongs with the device, not an app settings page.
     let audio_rows = {
         let pv_manager = aacp_manager.clone();
         let pv_mac = mac.clone();
@@ -338,6 +391,7 @@ pub fn airpods_view<'a>(
         let off_manager = aacp_manager.clone();
         let off_mac = mac.clone();
         let off_state = state.clone();
+        let stem_manager = aacp_manager.clone();
         column![
             toggle_row("Personalized volume", state.personalized_volume_enabled, move |is_enabled| {
                 let aacp_manager = pv_manager.clone();
@@ -384,6 +438,21 @@ pub fn airpods_view<'a>(
                 state.allow_off_mode = is_enabled;
                 Message::StateChanged(off_mac.clone(), DeviceState::AirPods(state))
             }),
+            toggle_row("Stem press track control", stem_control, move |is_enabled| {
+                // Bitmask: double press = 0x02, triple = 0x04. Applied live and
+                // persisted so reconnects re-apply it at connect time.
+                let aacp_manager = stem_manager.clone();
+                run_async_in_thread(async move {
+                    aacp_manager
+                        .send_control_command(
+                            ControlCommandIdentifiers::StemConfig,
+                            if is_enabled { &[0x06] } else { &[0x00] },
+                        )
+                        .await
+                        .expect("Failed to send Stem Config command");
+                });
+                Message::StemControlChanged(is_enabled)
+            }),
         ]
     };
 
@@ -393,55 +462,43 @@ pub fn airpods_view<'a>(
         && let Some(DeviceInformation::AirPods(ref info)) = device.information
     {
         information = column![
-            separator(),
-            Space::new().height(18),
+            Space::new().height(28),
             section_header("DEVICE"),
-            Space::new().height(6),
+            Space::new().height(8),
             info_row("Model", info.model_number.clone(), false),
             info_row("Serial", info.serial_number.clone(), true),
             info_row("Left serial", info.left_serial_number.clone(), true),
             info_row("Right serial", info.right_serial_number.clone(), true),
             info_row("Firmware", info.version1.clone(), false),
-            Space::new().height(18),
         ];
     }
 
-    let meta = row![text(mac.clone()).size(12).style(|theme: &Theme| text::Style {
-        color: Some(muted(theme)),
-    })];
-
-    let content = column![
-        Space::new().height(8),
-        hero,
-        Space::new().height(18),
-        battery_row,
-        Space::new().height(22),
-        separator(),
-        Space::new().height(18),
-        section_header("NOISE CONTROL"),
-        Space::new().height(12),
-        noise_control,
-        Space::new().height(18),
-        separator(),
-        Space::new().height(18),
+    let right_col = column![
         section_header("AUDIO"),
         Space::new().height(4),
         audio_rows,
-        Space::new().height(18),
         information,
-        meta,
-        Space::new().height(16),
     ]
-    .max_width(560);
+    .width(Length::Fill);
+
+    let cols = row![left_col, right_col].spacing(44);
+
+    let content = column![
+        hero,
+        Space::new().height(24),
+        cols,
+        Space::new().height(24),
+    ]
+    .width(Length::Fill);
 
     container(iced::widget::scrollable(content).height(Length::Fill))
         .padding(Padding {
-            top: 8.0,
+            top: 28.0,
             bottom: 0.0,
-            left: 28.0,
-            right: 28.0,
+            left: 36.0,
+            right: 36.0,
         })
-        .center_x(Length::Fill)
+        .width(Length::Fill)
         .height(Length::Fill)
 }
 

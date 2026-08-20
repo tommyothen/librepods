@@ -17,9 +17,9 @@ use iced::widget::button::Style;
 use iced::widget::rule::FillMode;
 use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
-    text_input, toggler
+    text_input
 };
-use crate::ui::airpods::{muted, separator};
+use crate::ui::airpods::muted;
 use iced::{Background, Border, Center, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
 use log::{debug, error};
 use std::collections::HashMap;
@@ -77,7 +77,6 @@ pub struct App {
     pending_add_device: Option<(String, Address)>,
     device_type_state: combo_box::State<DeviceType>,
     selected_device_type: Option<DeviceType>,
-    tray_text_mode: bool,
     stem_control: bool,
 }
 
@@ -109,7 +108,6 @@ pub enum Message {
     ConfirmAddDevice,
     CancelAddDevice,
     StateChanged(String, DeviceState),
-    TrayTextModeChanged(bool), // yes, I know I should add all settings to a struct, but I'm lazy
     StemControlChanged(bool),
     ReloadCustomTheme,
 }
@@ -117,7 +115,6 @@ pub enum Message {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Tab {
     Device(String),
-    Settings,
     AddDevice,
 }
 
@@ -160,11 +157,6 @@ impl App {
             .and_then(|v| v.get("theme").cloned())
             .and_then(|t| serde_json::from_value(t).ok())
             .unwrap_or(MyTheme::Dark);
-        let tray_text_mode = settings
-            .clone()
-            .and_then(|v| v.get("tray_text_mode").cloned())
-            .and_then(|ttm| serde_json::from_value(ttm).ok())
-            .unwrap_or(false);
         let stem_control = settings
             .clone()
             .and_then(|v| v.get("stem_control").cloned())
@@ -221,7 +213,6 @@ impl App {
                 device_type_state: combo_box::State::new(vec![DeviceType::Nothing]),
                 selected_device_type: None,
                 device_managers,
-                tray_text_mode,
                 stem_control,
             },
             Task::batch(vec![open_task, wait_task]),
@@ -257,18 +248,7 @@ impl App {
                 if theme == MyTheme::Custom {
                     self.custom_theme = load_custom_theme();
                 }
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
+                update_app_setting("theme", serde_json::json!(self.selected_theme));
                 Task::none()
             }
             Message::CopyToClipboard(data) => iced::clipboard::write(data),
@@ -641,36 +621,9 @@ impl App {
                 }
                 Task::none()
             }
-            Message::TrayTextModeChanged(is_enabled) => {
-                self.tray_text_mode = is_enabled;
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
-                Task::none()
-            }
             Message::StemControlChanged(is_enabled) => {
                 self.stem_control = is_enabled;
-                let app_settings_path = get_app_settings_path();
-                let settings = serde_json::json!({
-                    "theme": self.selected_theme,
-                    "tray_text_mode": self.tray_text_mode,
-                    "stem_control": self.stem_control,
-                });
-                debug!(
-                    "Writing settings to {}: {}",
-                    app_settings_path.to_str().unwrap(),
-                    settings
-                );
-                std::fs::write(app_settings_path, settings.to_string()).ok();
+                update_app_setting("stem_control", serde_json::json!(is_enabled));
                 Task::none()
             }
             Message::ReloadCustomTheme => {
@@ -781,19 +734,62 @@ impl App {
                             .into()
                     };
 
-                    let create_settings_button = || -> Element<'_, Message> {
-                        let is_selected = self.selected_tab == Tab::Settings;
-                        button(text("Settings").size(14))
-                            .style(sidebar_item_style(is_selected))
-                            .padding(Padding {
-                                top: 8.0,
-                                bottom: 8.0,
-                                left: 12.0,
-                                right: 12.0,
+                    // The whole settings page is gone: the theme picker is the
+                    // only global setting left, so it lives in the sidebar foot.
+                    let create_theme_picker = || -> Element<'_, Message> {
+                        row![
+                            text("Theme").size(12).style(|theme: &Theme| text::Style {
+                                color: Some(muted(theme)),
+                            }),
+                            combo_box(
+                                &self.theme_state,
+                                "Theme",
+                                Some(&self.selected_theme),
+                                Message::ThemeSelected
+                            )
+                            .input_style(|theme: &Theme, _status| text_input::Style {
+                                background: Background::Color(Color::TRANSPARENT),
+                                border: Border {
+                                    width: 1.0,
+                                    color: theme.palette().text.scale_alpha(0.10),
+                                    radius: Radius::from(0.0),
+                                },
+                                icon: Default::default(),
+                                placeholder: muted(theme),
+                                value: theme.palette().text,
+                                selection: theme.palette().primary.scale_alpha(0.4),
                             })
-                            .on_press(Message::SelectTab(Tab::Settings))
-                            .width(Length::Fill)
-                            .into()
+                            .menu_style(|theme: &Theme| menu::Style {
+                                background: Background::Color(theme.palette().background),
+                                border: Border {
+                                    width: 1.0,
+                                    color: theme.palette().text.scale_alpha(0.10),
+                                    radius: Radius::from(0.0),
+                                },
+                                text_color: theme.palette().text,
+                                selected_text_color: theme.palette().text,
+                                selected_background: Background::Color(
+                                    theme.palette().primary.scale_alpha(0.3),
+                                ),
+                                shadow: Default::default()
+                            })
+                            .size(12.0)
+                            .padding(Padding {
+                                top: 4.0,
+                                bottom: 4.0,
+                                left: 8.0,
+                                right: 8.0,
+                            })
+                        ]
+                        .spacing(10)
+                        .align_y(Center)
+                        .padding(Padding {
+                            top: 8.0,
+                            bottom: 4.0,
+                            left: 10.0,
+                            right: 6.0,
+                        })
+                        .into()
                     };
 
                     let mut devices = column!().spacing(4);
@@ -810,7 +806,7 @@ impl App {
                         devices = devices.push(tab_button);
                     }
 
-                    let settings = create_settings_button();
+                    let theme_picker = create_theme_picker();
 
                     let content = column![
                         row![
@@ -845,7 +841,7 @@ impl App {
                         Space::new().height(Length::from(8)),
                         devices,
                         Space::new().height(Length::Fill),
-                        settings
+                        theme_picker
                     ]
                         .padding(12);
                     pane_grid::Content::new(
@@ -890,7 +886,8 @@ impl App {
                                                                     id,
                                                                     &devices_list,
                                                                     state,
-                                                                    aacp_manager.clone()
+                                                                    aacp_manager.clone(),
+                                                                    self.stem_control
                                                                 ))
                                                     })
                                                 }
@@ -941,104 +938,6 @@ impl App {
                                 }
                             }
                         }
-                        Tab::Settings => {
-                            let section = |label: &'static str| {
-                                text(label).size(11).style(|theme: &Theme| text::Style {
-                                    color: Some(muted(theme)),
-                                })
-                            };
-                            let toggle_line = |label: &'static str, value: bool, msg: fn(bool) -> Message| -> Element<'_, Message> {
-                                row![
-                                    text(label).size(14).width(Length::Fill),
-                                    toggler(value).on_toggle(msg).spacing(0).size(20),
-                                ]
-                                .align_y(Center)
-                                .padding(Padding {
-                                    top: 8.0,
-                                    bottom: 8.0,
-                                    left: 0.0,
-                                    right: 0.0,
-                                })
-                                .into()
-                            };
-
-                            let theme_row = row![
-                                text("Theme").size(14).width(Length::Fill),
-                                combo_box(
-                                    &self.theme_state,
-                                    "Select theme",
-                                    Some(&self.selected_theme),
-                                    Message::ThemeSelected
-                                )
-                                .input_style(|theme: &Theme, _status| text_input::Style {
-                                    background: Background::Color(Color::TRANSPARENT),
-                                    border: Border {
-                                        width: 1.0,
-                                        color: theme.palette().text.scale_alpha(0.10),
-                                        radius: Radius::from(0.0),
-                                    },
-                                    icon: Default::default(),
-                                    placeholder: muted(theme),
-                                    value: theme.palette().text,
-                                    selection: theme.palette().primary.scale_alpha(0.4),
-                                })
-                                .menu_style(|theme: &Theme| menu::Style {
-                                    background: Background::Color(theme.palette().background),
-                                    border: Border {
-                                        width: 1.0,
-                                        color: theme.palette().text.scale_alpha(0.10),
-                                        radius: Radius::from(0.0),
-                                    },
-                                    text_color: theme.palette().text,
-                                    selected_text_color: theme.palette().text,
-                                    selected_background: Background::Color(
-                                        theme.palette().primary.scale_alpha(0.3),
-                                    ),
-                                    shadow: Default::default()
-                                })
-                                .padding(Padding {
-                                    top: 5.0,
-                                    bottom: 5.0,
-                                    left: 10.0,
-                                    right: 10.0,
-                                })
-                                .width(Length::from(200))
-                            ]
-                            .align_y(Center)
-                            .padding(Padding {
-                                top: 8.0,
-                                bottom: 8.0,
-                                left: 0.0,
-                                right: 0.0,
-                            });
-
-                            container(
-                                column![
-                                    section("APPEARANCE"),
-                                    theme_row,
-                                    Space::new().height(10),
-                                    separator(),
-                                    Space::new().height(18),
-                                    section("TRAY"),
-                                    toggle_line("Text battery in tray", self.tray_text_mode, Message::TrayTextModeChanged),
-                                    Space::new().height(10),
-                                    separator(),
-                                    Space::new().height(18),
-                                    section("CONTROLS"),
-                                    toggle_line("Stem press track control", self.stem_control, Message::StemControlChanged),
-                                ]
-                                .max_width(560)
-                            )
-                                .padding(Padding {
-                                    top: 28.0,
-                                    bottom: 20.0,
-                                    left: 28.0,
-                                    right: 28.0,
-                                })
-                                .center_x(Length::Fill)
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                        },
                         Tab::AddDevice => {
                             container(
                                 column![
@@ -1246,6 +1145,22 @@ fn custom_theme_watcher() -> impl futures::Stream<Item = Message> {
             }
         },
     )
+}
+
+// Read-modify-write one key in app_settings.json, preserving keys written by
+// other parts of the app (the tray writes tray_text_mode independently).
+fn update_app_setting(key: &str, value: serde_json::Value) {
+    let path = get_app_settings_path();
+    let mut settings = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    settings[key] = value;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    debug!("Writing settings to {}: {}", path.display(), settings);
+    std::fs::write(path, settings.to_string()).ok();
 }
 
 async fn wait_for_message(ui_rx: Arc<Mutex<UnboundedReceiver<BluetoothUIMessage>>>) -> Message {
