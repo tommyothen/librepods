@@ -316,10 +316,15 @@ fn info_row<'a>(
         text(value).size(13).into()
     };
 
+    let label_width = if sensitive {
+        130.0 - blur_pad(13.0).left
+    } else {
+        130.0
+    };
     row![
         text(label)
             .size(13)
-            .width(130)
+            .width(label_width)
             .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
             }),

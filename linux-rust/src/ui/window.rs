@@ -744,6 +744,7 @@ impl App {
                             },
                         );
 
+                        let mac_pad = blur_pad(11.0).left;
                         let sub_element: Element<'_, Message> = if sub_is_mac && self.hide_sensitive {
                             blurred_text(scramble(&sub), 11.0)
                         } else if sub_is_mac {
@@ -757,8 +758,23 @@ impl App {
                                 color: Some(muted(theme)),
                             }).into()
                         };
+                        // MAC subs carry the blur footprint, so shift the item
+                        // body left by it and indent the name to match: the
+                        // text cores of name and sub then share one x.
+                        let name_element: Element<'_, Message> = if sub_is_mac {
+                            container(text(label.to_string()).size(14))
+                                .padding(Padding {
+                                    top: 0.0,
+                                    bottom: 0.0,
+                                    left: mac_pad,
+                                    right: 0.0,
+                                })
+                                .into()
+                        } else {
+                            text(label.to_string()).size(14).into()
+                        };
                         let content = column![
-                            text(label.to_string()).size(14),
+                            name_element,
                             sub_element,
                         ]
                         .spacing(2);
@@ -768,7 +784,7 @@ impl App {
                             container(content).padding(Padding {
                                 top: 6.0,
                                 bottom: 6.0,
-                                left: 10.0,
+                                left: if sub_is_mac { 10.0 - mac_pad } else { 10.0 },
                                 right: 10.0,
                             })
                         ])
