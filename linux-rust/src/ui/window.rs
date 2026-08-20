@@ -19,7 +19,7 @@ use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
     text_input, toggler
 };
-use crate::ui::airpods::muted;
+use crate::ui::airpods::{blurred_text, muted};
 use iced::{Background, Border, Center, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
 use log::{debug, error};
 use std::collections::HashMap;
@@ -729,6 +729,7 @@ impl App {
                         } else {
                             mac_addr.to_string()
                         };
+                        let sub_is_mac = !connected;
 
                         // Fixed height: a Fill here propagates up and makes the
                         // whole sidebar item stretch to fill the pane.
@@ -743,11 +744,16 @@ impl App {
                             },
                         );
 
-                        let content = column![
-                            text(label.to_string()).size(14),
+                        let sub_element: Element<'_, Message> = if sub_is_mac && self.hide_sensitive {
+                            blurred_text(scramble(&sub), 11.0)
+                        } else {
                             text(sub).size(11).style(|theme: &Theme| text::Style {
                                 color: Some(muted(theme)),
-                            }),
+                            }).into()
+                        };
+                        let content = column![
+                            text(label.to_string()).size(14),
+                            sub_element,
                         ]
                         .spacing(2);
 

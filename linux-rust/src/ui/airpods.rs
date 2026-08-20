@@ -50,6 +50,46 @@ fn band_divider<'a>() -> Element<'a, Message> {
         .into()
 }
 
+// Approximated gaussian blur, modeled on a CSS blur(2px) at ~12px text
+// (sigma = 0.18 x font size): iced has no filter effects, so the scrambled
+// stand-in is drawn as a stack of low-alpha copies, horizontally weighted the
+// way small monospace text tolerates best. Per-copy alpha is tuned for
+// source-over compositing (coverage = 1 - prod(1 - a), targeting ~0.7 of the
+// muted text tone). The characters underneath are already fake (see
+// utils::scramble); the smear is purely the visual language for "hidden".
+pub fn blurred_text<'a, M: 'a>(content: String, size: f32) -> Element<'a, M> {
+    let spread = (size * 0.36).round(); // ~2 sigma at sigma = 0.18 x size
+    let step = spread / 3.0;
+    let mut layers = iced::widget::Stack::new();
+    let offsets: [(f32, f32, f32); 9] = [
+        (0.0, 0.0, 0.22),
+        (-step, 0.0, 0.15),
+        (step, 0.0, 0.15),
+        (-2.0 * step, 0.0, 0.12),
+        (2.0 * step, 0.0, 0.12),
+        (-spread, 0.0, 0.08),
+        (spread, 0.0, 0.08),
+        (0.0, -1.0, 0.10),
+        (0.0, 1.0, 0.10),
+    ];
+    for (dx, dy, alpha) in offsets {
+        layers = layers.push(
+            container(text(content.clone()).size(size).style(move |theme: &Theme| {
+                text::Style {
+                    color: Some(theme.palette().text.scale_alpha(alpha)),
+                }
+            }))
+            .padding(Padding {
+                top: 1.0 + dy,
+                bottom: 1.0 - dy,
+                left: spread + dx,
+                right: spread - dx,
+            }),
+        );
+    }
+    layers.into()
+}
+
 // Small uppercase section label, e.g. "NOISE CONTROL".
 fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
     text(label)
@@ -218,24 +258,29 @@ fn info_row<'a>(
     hidden: bool,
 ) -> Element<'a, Message> {
     let masked = sensitive && hidden;
-    let shown = if masked { scramble(&value) } else { value.clone() };
-    let value_el: Element<'a, Message> = if copy || masked {
-        button(text(shown).size(13))
-            .style(move |theme: &Theme, _status| {
+    let value_el: Element<'a, Message> = if masked {
+        button(blurred_text(scramble(&value), 13.0))
+            .style(|_theme: &Theme, _status| {
                 let mut style = iced::widget::button::Style::default();
-                style.text_color = if masked { muted(theme) } else { theme.palette().text };
                 style.background = Some(Background::Color(Color::TRANSPARENT));
                 style
             })
             .padding(0)
-            .on_press(if masked {
-                Message::ToggleSensitive
-            } else {
-                Message::CopyToClipboard(value)
+            .on_press(Message::ToggleSensitive)
+            .into()
+    } else if copy {
+        button(text(value.clone()).size(13))
+            .style(|theme: &Theme, _status| {
+                let mut style = iced::widget::button::Style::default();
+                style.text_color = theme.palette().text;
+                style.background = Some(Background::Color(Color::TRANSPARENT));
+                style
             })
+            .padding(0)
+            .on_press(Message::CopyToClipboard(value))
             .into()
     } else {
-        text(shown).size(13).into()
+        text(value).size(13).into()
     };
 
     row![
@@ -320,23 +365,33 @@ pub fn airpods_view<'a>(
             }
         });
 
-    let mac_display = if hide_sensitive { scramble(&mac) } else { mac.clone() };
-    let hero = column![
-        row![
-            title,
-            button(text(mac_display).size(12).style(|theme: &Theme| text::Style {
+    let mac_element: Element<'_, Message> = if hide_sensitive {
+        blurred_text(scramble(&mac), 12.0)
+    } else {
+        text(mac.clone())
+            .size(12)
+            .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
-            }))
-            .style(|_theme: &Theme, _status| {
-                let mut style = iced::widget::button::Style::default();
-                style.background = Some(Background::Color(Color::TRANSPARENT));
-                style
             })
-            .padding(0)
-            .on_press(Message::ToggleSensitive),
-        ]
-        .spacing(16)
-        .align_y(Center),
+            .into()
+    };
+    // Global privacy toggle: an eye in the top right corner of the page.
+    let eye = button(
+        text(if hide_sensitive { "\u{1002ED}" } else { "\u{1002EF}" }).size(15).style(
+            |theme: &Theme| text::Style {
+                color: Some(muted(theme)),
+            },
+        ),
+    )
+    .style(|_theme: &Theme, _status| {
+        let mut style = iced::widget::button::Style::default();
+        style.background = Some(Background::Color(Color::TRANSPARENT));
+        style
+    })
+    .padding(0)
+    .on_press(Message::ToggleSensitive);
+    let hero = column![
+        row![title, mac_element, eye].spacing(16).align_y(Center),
         Space::new().height(4),
         text(status_line(state))
             .size(12)
@@ -487,25 +542,7 @@ pub fn airpods_view<'a>(
     {
         information = column![
             Space::new().height(28),
-            row![
-                section_header("DEVICE"),
-                Space::new().width(Length::Fill),
-                button(
-                    text(if hide_sensitive { "SHOW" } else { "HIDE" })
-                        .size(11)
-                        .style(|theme: &Theme| text::Style {
-                            color: Some(muted(theme)),
-                        })
-                )
-                .style(|_theme: &Theme, _status| {
-                    let mut style = iced::widget::button::Style::default();
-                    style.background = Some(Background::Color(Color::TRANSPARENT));
-                    style
-                })
-                .padding(0)
-                .on_press(Message::ToggleSensitive),
-            ]
-            .align_y(Center),
+            section_header("DEVICE"),
             Space::new().height(8),
             info_row("Model", info.model_number.clone(), false, false, hide_sensitive),
             info_row("Serial", info.serial_number.clone(), true, true, hide_sensitive),
