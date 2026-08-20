@@ -57,12 +57,29 @@ fn band_divider<'a>() -> Element<'a, Message> {
 // source-over compositing (coverage = 1 - prod(1 - a), targeting ~0.7 of the
 // muted text tone). The characters underneath are already fake (see
 // utils::scramble); the smear is purely the visual language for "hidden".
+// The blur stack pads its content by (spread, 2v) per side; revealed text
+// must sit inside the same padding or the layout shifts on every toggle.
+pub fn blur_pad(size: f32) -> Padding {
+    let (spread, v) = blur_metrics(size);
+    Padding {
+        top: 2.0 * v,
+        bottom: 2.0 * v,
+        left: spread,
+        right: spread,
+    }
+}
+
+fn blur_metrics(size: f32) -> (f32, f32) {
+    let spread = (size * 0.6).round();
+    let v = (size * 0.16).round().max(1.0);
+    (spread, v)
+}
+
 pub fn blurred_text<'a, M: 'a>(content: String, size: f32) -> Element<'a, M> {
     // ~sigma = 0.3 x font size; a flat alpha distribution with no sharp
     // center copy is what makes it read as blur rather than ghosting.
-    let spread = (size * 0.6).round();
+    let (spread, v) = blur_metrics(size);
     let step = spread / 3.0;
-    let v = (size * 0.16).round().max(1.0);
     let mut layers = iced::widget::Stack::new();
     let offsets: [(f32, f32, f32); 15] = [
         (0.0, 0.0, 0.13),
@@ -278,7 +295,14 @@ fn info_row<'a>(
             .on_press(Message::ToggleSensitive)
             .into()
     } else if copy {
-        button(text(value.clone()).size(13))
+        let inner: Element<'a, Message> = if sensitive {
+            container(text(value.clone()).size(13))
+                .padding(blur_pad(13.0))
+                .into()
+        } else {
+            text(value.clone()).size(13).into()
+        };
+        button(inner)
             .style(|theme: &Theme, _status| {
                 let mut style = iced::widget::button::Style::default();
                 style.text_color = theme.palette().text;
@@ -377,20 +401,25 @@ pub fn airpods_view<'a>(
     let mac_element: Element<'_, Message> = if hide_sensitive {
         blurred_text(scramble(&mac), 12.0)
     } else {
-        text(mac.clone())
-            .size(12)
-            .style(|theme: &Theme| text::Style {
-                color: Some(muted(theme)),
-            })
-            .into()
+        container(
+            text(mac.clone())
+                .size(12)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(muted(theme)),
+                }),
+        )
+        .padding(blur_pad(12.0))
+        .into()
     };
     // Global privacy toggle: an eye in the top right corner of the page.
     let eye = button(
-        text(if hide_sensitive { "\u{1002ED}" } else { "\u{1002EF}" }).size(15).style(
-            |theme: &Theme| text::Style {
+        text(if hide_sensitive { "\u{1002ED}" } else { "\u{1002EF}" })
+            .size(15)
+            .width(24)
+            .center()
+            .style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
-            },
-        ),
+            }),
     )
     .style(|_theme: &Theme, _status| {
         let mut style = iced::widget::button::Style::default();

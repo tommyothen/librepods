@@ -19,7 +19,7 @@ use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
     text_input, toggler
 };
-use crate::ui::airpods::{blurred_text, muted};
+use crate::ui::airpods::{blur_pad, blurred_text, muted};
 use iced::{Background, Border, Center, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
 use log::{debug, error};
 use std::collections::HashMap;
@@ -746,6 +746,12 @@ impl App {
 
                         let sub_element: Element<'_, Message> = if sub_is_mac && self.hide_sensitive {
                             blurred_text(scramble(&sub), 11.0)
+                        } else if sub_is_mac {
+                            container(text(sub).size(11).style(|theme: &Theme| text::Style {
+                                color: Some(muted(theme)),
+                            }))
+                            .padding(blur_pad(11.0))
+                            .into()
                         } else {
                             text(sub).size(11).style(|theme: &Theme| text::Style {
                                 color: Some(muted(theme)),
