@@ -137,12 +137,10 @@ async fn build_snapshot(manager: &AACPManager) -> StateSnapshot {
 
     let noise_control_mode =
         find_command(ControlCommandIdentifiers::ListeningMode).and_then(noise_mode_name);
-    let allow_off = find_command(ControlCommandIdentifiers::AllowOffOption) == Some(0x01);
-    let mut allowed_noise_control_modes =
-        vec!["noise_cancellation", "transparency", "adaptive"];
-    if allow_off {
-        allowed_noise_control_modes.insert(0, "off");
-    }
+    // Off is always actionable: set-noise-control enables the device's
+    // allow-off flag on the fly, so consumers can always offer it.
+    let allowed_noise_control_modes =
+        vec!["off", "noise_cancellation", "transparency", "adaptive"];
     // These report 0x01 = enabled, 0x02 = disabled; absent until the AirPods
     // send their initial status dump.
     let toggle = |id| find_command(id).map(|v| v == 0x01);
@@ -236,6 +234,29 @@ async fn handle_command(
             let Some(byte) = noise_mode_byte(&mode) else {
                 return r#"{"ok":false,"error":"unknown mode; expected off|noise_cancellation|transparency|adaptive"}"#.to_string();
             };
+            // Off only takes effect once the AirPods allow it; mirror the UI
+            // and enable the flag on the fly.
+            if byte == 0x01 {
+                let Some(manager) = first_aacp_manager(device_managers).await else {
+                    return r#"{"ok":false,"error":"no connected device"}"#.to_string();
+                };
+                let allow_off = {
+                    let state = manager.state.lock().await;
+                    state
+                        .control_command_status_list
+                        .iter()
+                        .find(|s| s.identifier == ControlCommandIdentifiers::AllowOffOption)
+                        .and_then(|s| s.value.first().copied())
+                        == Some(0x01)
+                };
+                if !allow_off
+                    && let Err(e) = manager
+                        .send_control_command(ControlCommandIdentifiers::AllowOffOption, &[0x01])
+                        .await
+                {
+                    return format!(r#"{{"ok":false,"error":"{}"}}"#, e);
+                }
+            }
             send_control(device_managers, ControlCommandIdentifiers::ListeningMode, byte).await
         }
         Command::SetConversationAwareness { enabled } => {
