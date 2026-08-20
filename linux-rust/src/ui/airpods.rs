@@ -58,19 +58,28 @@ fn band_divider<'a>() -> Element<'a, Message> {
 // muted text tone). The characters underneath are already fake (see
 // utils::scramble); the smear is purely the visual language for "hidden".
 pub fn blurred_text<'a, M: 'a>(content: String, size: f32) -> Element<'a, M> {
-    let spread = (size * 0.36).round(); // ~2 sigma at sigma = 0.18 x size
+    // ~sigma = 0.3 x font size; a flat alpha distribution with no sharp
+    // center copy is what makes it read as blur rather than ghosting.
+    let spread = (size * 0.6).round();
     let step = spread / 3.0;
+    let v = (size * 0.16).round().max(1.0);
     let mut layers = iced::widget::Stack::new();
-    let offsets: [(f32, f32, f32); 9] = [
-        (0.0, 0.0, 0.22),
-        (-step, 0.0, 0.15),
-        (step, 0.0, 0.15),
-        (-2.0 * step, 0.0, 0.12),
-        (2.0 * step, 0.0, 0.12),
-        (-spread, 0.0, 0.08),
-        (spread, 0.0, 0.08),
-        (0.0, -1.0, 0.10),
-        (0.0, 1.0, 0.10),
+    let offsets: [(f32, f32, f32); 15] = [
+        (0.0, 0.0, 0.13),
+        (-step, 0.0, 0.11),
+        (step, 0.0, 0.11),
+        (-2.0 * step, 0.0, 0.09),
+        (2.0 * step, 0.0, 0.09),
+        (-spread, 0.0, 0.06),
+        (spread, 0.0, 0.06),
+        (0.0, -v, 0.09),
+        (0.0, v, 0.09),
+        (-step, -v, 0.07),
+        (step, -v, 0.07),
+        (-step, v, 0.07),
+        (step, v, 0.07),
+        (0.0, -2.0 * v, 0.05),
+        (0.0, 2.0 * v, 0.05),
     ];
     for (dx, dy, alpha) in offsets {
         layers = layers.push(
@@ -80,8 +89,8 @@ pub fn blurred_text<'a, M: 'a>(content: String, size: f32) -> Element<'a, M> {
                 }
             }))
             .padding(Padding {
-                top: 1.0 + dy,
-                bottom: 1.0 - dy,
+                top: 2.0 * v + dy,
+                bottom: 2.0 * v - dy,
                 left: spread + dx,
                 right: spread - dx,
             }),
