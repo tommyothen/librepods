@@ -9,7 +9,7 @@ use crate::devices::enums::{
 use crate::ui::airpods::airpods_view;
 use crate::ui::messages::BluetoothUIMessage;
 use crate::ui::nothing::nothing_view;
-use crate::utils::{MyTheme, get_app_settings_path, get_custom_theme_path, get_devices_path, load_custom_theme};
+use crate::utils::{MyTheme, get_app_settings_path, get_custom_theme_path, get_devices_path, load_custom_theme, scramble};
 use bluer::{Address};
 use iced::border::Radius;
 use iced::overlay::menu;
@@ -17,7 +17,7 @@ use iced::widget::button::Style;
 use iced::widget::rule::FillMode;
 use iced::widget::{
     Space, button, column, combo_box, container, pane_grid, row, rule, scrollable, text,
-    text_input
+    text_input, toggler
 };
 use crate::ui::airpods::muted;
 use iced::{Background, Border, Center, Color, Element, Font, Length, Padding, Size, Subscription, Task, Theme, daemon, window, Settings, Program};
@@ -78,6 +78,9 @@ pub struct App {
     device_type_state: combo_box::State<DeviceType>,
     selected_device_type: Option<DeviceType>,
     stem_control: bool,
+    tray_text_mode: bool,
+    // Session-only: identifiers always start scrambled on launch.
+    hide_sensitive: bool,
 }
 
 pub struct BluetoothState {
@@ -109,6 +112,8 @@ pub enum Message {
     CancelAddDevice,
     StateChanged(String, DeviceState),
     StemControlChanged(bool),
+    TrayTextModeChanged(bool),
+    ToggleSensitive,
     ReloadCustomTheme,
 }
 
@@ -160,6 +165,11 @@ impl App {
         let stem_control = settings
             .clone()
             .and_then(|v| v.get("stem_control").cloned())
+            .and_then(|s| serde_json::from_value(s).ok())
+            .unwrap_or(false);
+        let tray_text_mode = settings
+            .clone()
+            .and_then(|v| v.get("tray_text_mode").cloned())
             .and_then(|s| serde_json::from_value(s).ok())
             .unwrap_or(false);
 
@@ -214,6 +224,8 @@ impl App {
                 selected_device_type: None,
                 device_managers,
                 stem_control,
+                tray_text_mode,
+                hide_sensitive: true,
             },
             Task::batch(vec![open_task, wait_task]),
         )
@@ -290,6 +302,12 @@ impl App {
                         }
                         if !already_connected {
                             self.bluetooth_state.connected_devices.push(mac.clone());
+                        }
+
+                        // Jump straight to the device that just connected when
+                        // the window is sitting on the empty placeholder.
+                        if matches!(&self.selected_tab, Tab::Device(m) if m == "none") {
+                            self.selected_tab = Tab::Device(mac.clone());
                         }
 
                         // self.device_states.insert(mac.clone(), DeviceState::AirPods(AirPodsState {
@@ -407,7 +425,13 @@ impl App {
                         self.device_states.remove(&mac);
 
                         if matches!(&self.selected_tab, Tab::Device(selected_mac) if selected_mac == &mac) {
-                            self.selected_tab = Tab::Device("none".to_string());
+                            self.selected_tab = Tab::Device(
+                                self.bluetooth_state
+                                    .connected_devices
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| "none".to_string()),
+                            );
                         }
 
                         Task::batch(vec![wait_task])
@@ -626,6 +650,15 @@ impl App {
                 update_app_setting("stem_control", serde_json::json!(is_enabled));
                 Task::none()
             }
+            Message::TrayTextModeChanged(is_enabled) => {
+                self.tray_text_mode = is_enabled;
+                update_app_setting("tray_text_mode", serde_json::json!(is_enabled));
+                Task::none()
+            }
+            Message::ToggleSensitive => {
+                self.hide_sensitive = !self.hide_sensitive;
+                Task::none()
+            }
             Message::ReloadCustomTheme => {
                 self.custom_theme = load_custom_theme();
                 Task::none()
@@ -841,6 +874,22 @@ impl App {
                         Space::new().height(Length::from(8)),
                         devices,
                         Space::new().height(Length::Fill),
+                        row![
+                            text("Text battery in tray").size(12).style(|theme: &Theme| text::Style {
+                                color: Some(muted(theme)),
+                            }).width(Length::Fill),
+                            toggler(self.tray_text_mode)
+                                .on_toggle(Message::TrayTextModeChanged)
+                                .spacing(0)
+                                .size(16),
+                        ]
+                        .align_y(Center)
+                        .padding(Padding {
+                            top: 4.0,
+                            bottom: 0.0,
+                            left: 10.0,
+                            right: 6.0,
+                        }),
                         theme_picker
                     ]
                         .padding(12);
@@ -887,7 +936,8 @@ impl App {
                                                                     &devices_list,
                                                                     state,
                                                                     aacp_manager.clone(),
-                                                                    self.stem_control
+                                                                    self.stem_control,
+                                                                    self.hide_sensitive
                                                                 ))
                                                     })
                                                 }

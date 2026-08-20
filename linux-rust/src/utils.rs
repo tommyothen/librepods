@@ -99,6 +99,46 @@ pub fn load_custom_theme() -> Theme {
     Theme::custom(file.name.unwrap_or_else(|| "Custom".to_string()), palette)
 }
 
+// Per-launch nonce so scrambled strings are stable within a session (no
+// flicker between frames) but different across launches.
+fn scramble_nonce() -> u64 {
+    use std::sync::OnceLock;
+    static NONCE: OnceLock<u64> = OnceLock::new();
+    *NONCE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.subsec_nanos() as u64) ^ d.as_secs())
+            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+            ^ (std::process::id() as u64)
+    })
+}
+
+/// Privacy mask for identifiers (MACs, serials). Every alphanumeric character
+/// is REPLACED with a random one of the same class, so the display looks like
+/// plausible data but carries none of the original: unlike a visual blur,
+/// there is nothing to recover from a screenshot or recording.
+pub fn scramble(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            scramble_nonce().hash(&mut hasher);
+            text.len().hash(&mut hasher);
+            i.hash(&mut hasher);
+            let v = hasher.finish();
+            match c {
+                '0'..='9' => char::from(b'0' + (v % 10) as u8),
+                'a'..='f' => char::from(b'a' + (v % 6) as u8),
+                'A'..='F' => char::from(b'A' + (v % 6) as u8),
+                'g'..='z' => char::from(b'a' + (v % 26) as u8),
+                'G'..='Z' => char::from(b'A' + (v % 26) as u8),
+                other => other,
+            }
+        })
+        .collect()
+}
+
 fn e(key: &[u8; 16], data: &[u8; 16]) -> [u8; 16] {
     let mut swapped_key = *key;
     swapped_key.reverse();

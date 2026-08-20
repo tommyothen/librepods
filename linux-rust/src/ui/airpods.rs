@@ -15,6 +15,7 @@ use crate::devices::enums::{
     AirPodsNoiseControlMode, AirPodsState, DeviceData, DeviceInformation, DeviceState,
 };
 use crate::ui::window::Message;
+use crate::utils::scramble;
 
 // Shared tones for the flat look: hairline separators and secondary text both
 // derive from the theme's text color, so every theme (including Custom) works.
@@ -207,20 +208,34 @@ fn toggle_row<'a>(
 }
 
 // Flat key/value line; the value is click-to-copy when `copy` is set.
-fn info_row<'a>(label: &'static str, value: String, copy: bool) -> Element<'a, Message> {
-    let value_el: Element<'a, Message> = if copy {
-        button(text(value.clone()).size(13))
-            .style(|theme: &Theme, _status| {
+// Sensitive values render scrambled while hidden, and clicking one reveals
+// everything instead of copying masked garbage.
+fn info_row<'a>(
+    label: &'static str,
+    value: String,
+    copy: bool,
+    sensitive: bool,
+    hidden: bool,
+) -> Element<'a, Message> {
+    let masked = sensitive && hidden;
+    let shown = if masked { scramble(&value) } else { value.clone() };
+    let value_el: Element<'a, Message> = if copy || masked {
+        button(text(shown).size(13))
+            .style(move |theme: &Theme, _status| {
                 let mut style = iced::widget::button::Style::default();
-                style.text_color = theme.palette().text;
+                style.text_color = if masked { muted(theme) } else { theme.palette().text };
                 style.background = Some(Background::Color(Color::TRANSPARENT));
                 style
             })
             .padding(0)
-            .on_press(Message::CopyToClipboard(value))
+            .on_press(if masked {
+                Message::ToggleSensitive
+            } else {
+                Message::CopyToClipboard(value)
+            })
             .into()
     } else {
-        text(value).size(13).into()
+        text(shown).size(13).into()
     };
 
     row![
@@ -267,6 +282,7 @@ pub fn airpods_view<'a>(
     state: &'a AirPodsState,
     aacp_manager: Arc<AACPManager>,
     stem_control: bool,
+    hide_sensitive: bool,
     // att_manager: Arc<ATTManager>
 ) -> iced::widget::Container<'a, Message> {
     let mac = mac.to_string();
@@ -304,12 +320,20 @@ pub fn airpods_view<'a>(
             }
         });
 
+    let mac_display = if hide_sensitive { scramble(&mac) } else { mac.clone() };
     let hero = column![
         row![
             title,
-            text(mac.clone()).size(12).style(|theme: &Theme| text::Style {
+            button(text(mac_display).size(12).style(|theme: &Theme| text::Style {
                 color: Some(muted(theme)),
-            }),
+            }))
+            .style(|_theme: &Theme, _status| {
+                let mut style = iced::widget::button::Style::default();
+                style.background = Some(Background::Color(Color::TRANSPARENT));
+                style
+            })
+            .padding(0)
+            .on_press(Message::ToggleSensitive),
         ]
         .spacing(16)
         .align_y(Center),
@@ -463,13 +487,31 @@ pub fn airpods_view<'a>(
     {
         information = column![
             Space::new().height(28),
-            section_header("DEVICE"),
+            row![
+                section_header("DEVICE"),
+                Space::new().width(Length::Fill),
+                button(
+                    text(if hide_sensitive { "SHOW" } else { "HIDE" })
+                        .size(11)
+                        .style(|theme: &Theme| text::Style {
+                            color: Some(muted(theme)),
+                        })
+                )
+                .style(|_theme: &Theme, _status| {
+                    let mut style = iced::widget::button::Style::default();
+                    style.background = Some(Background::Color(Color::TRANSPARENT));
+                    style
+                })
+                .padding(0)
+                .on_press(Message::ToggleSensitive),
+            ]
+            .align_y(Center),
             Space::new().height(8),
-            info_row("Model", info.model_number.clone(), false),
-            info_row("Serial", info.serial_number.clone(), true),
-            info_row("Left serial", info.left_serial_number.clone(), true),
-            info_row("Right serial", info.right_serial_number.clone(), true),
-            info_row("Firmware", info.version1.clone(), false),
+            info_row("Model", info.model_number.clone(), false, false, hide_sensitive),
+            info_row("Serial", info.serial_number.clone(), true, true, hide_sensitive),
+            info_row("Left serial", info.left_serial_number.clone(), true, true, hide_sensitive),
+            info_row("Right serial", info.right_serial_number.clone(), true, true, hide_sensitive),
+            info_row("Firmware", info.version1.clone(), false, false, hide_sensitive),
         ];
     }
 
