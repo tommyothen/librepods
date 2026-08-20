@@ -744,7 +744,9 @@ impl App {
                             mac_addr.to_string()
                         };
 
-                        let accent = container(Space::new().width(2).height(Length::Fill)).style(
+                        // Fixed height: a Fill here propagates up and makes the
+                        // whole sidebar item stretch to fill the pane.
+                        let accent = container(Space::new().width(2).height(44)).style(
                             move |theme: &Theme| container::Style {
                                 background: Some(Background::Color(if is_selected {
                                     theme.palette().primary
