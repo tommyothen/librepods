@@ -218,13 +218,26 @@ fn mode_segment<'a>(
     let on_press = move || {
         let aacp_manager = aacp_manager.clone();
         let mode_byte = mode.to_byte();
+        // Off only takes effect once the AirPods allow it; enable that on the
+        // fly so the segment works without a separate setting.
+        let needs_allow_off =
+            matches!(mode, AirPodsNoiseControlMode::Off) && !state.allow_off_mode;
         run_async_in_thread(async move {
+            if needs_allow_off {
+                aacp_manager
+                    .send_control_command(ControlCommandIdentifiers::AllowOffOption, &[0x01])
+                    .await
+                    .expect("Failed to send Allow Off Option command");
+            }
             aacp_manager
                 .send_control_command(ControlCommandIdentifiers::ListeningMode, &[mode_byte])
                 .await
                 .expect("Failed to send Noise Control Mode command");
         });
         let mut state = state.clone();
+        if needs_allow_off {
+            state.allow_off_mode = true;
+        }
         state.noise_control_mode = mode.clone();
         Message::StateChanged(mac.to_string(), DeviceState::AirPods(state))
     };
@@ -468,15 +481,14 @@ pub fn airpods_view<'a>(
         ..container::Style::default()
     });
 
-    // Noise control: equal-width segments inside one hairline outline.
-    let mut modes = vec![
+    // Noise control: equal-width segments inside one hairline outline. Off is
+    // always offered; selecting it enables the device's allow-off flag first.
+    let modes = vec![
+        AirPodsNoiseControlMode::Off,
         AirPodsNoiseControlMode::Transparency,
         AirPodsNoiseControlMode::NoiseCancellation,
         AirPodsNoiseControlMode::Adaptive,
     ];
-    if state.allow_off_mode {
-        modes.insert(0, AirPodsNoiseControlMode::Off);
-    }
     let mut segments = row![].spacing(0);
     for mode in modes {
         segments = segments.push(mode_segment(&mac, state, aacp_manager.clone(), mode));
@@ -510,9 +522,6 @@ pub fn airpods_view<'a>(
         let ca_manager = aacp_manager.clone();
         let ca_mac = mac.clone();
         let ca_state = state.clone();
-        let off_manager = aacp_manager.clone();
-        let off_mac = mac.clone();
-        let off_state = state.clone();
         let stem_manager = aacp_manager.clone();
         column![
             toggle_row("Personalized volume", state.personalized_volume_enabled, move |is_enabled| {
@@ -544,21 +553,6 @@ pub fn airpods_view<'a>(
                 let mut state = ca_state.clone();
                 state.conversation_awareness_enabled = is_enabled;
                 Message::StateChanged(ca_mac.clone(), DeviceState::AirPods(state))
-            }),
-            toggle_row("Off listening mode", state.allow_off_mode, move |is_enabled| {
-                let aacp_manager = off_manager.clone();
-                run_async_in_thread(async move {
-                    aacp_manager
-                        .send_control_command(
-                            ControlCommandIdentifiers::AllowOffOption,
-                            if is_enabled { &[0x01] } else { &[0x02] },
-                        )
-                        .await
-                        .expect("Failed to send Off Listening Mode command");
-                });
-                let mut state = off_state.clone();
-                state.allow_off_mode = is_enabled;
-                Message::StateChanged(off_mac.clone(), DeviceState::AirPods(state))
             }),
             toggle_row("Stem press track control", stem_control, move |is_enabled| {
                 // Bitmask: double press = 0x02, triple = 0x04. Applied live and
